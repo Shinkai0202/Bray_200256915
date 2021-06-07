@@ -1,0 +1,571 @@
+---
+title: "One Hundred Years of Chess"
+author: "Ollie Bray"
+date: "02/06/2021"
+output:
+  html_document:
+    theme: yeti
+runtime: shiny
+resource_files:
+- processedDataExample.csv
+- LongFormat.csv
+- completeDataset.csv
+---
+```{r, echo = FALSE, warning = FALSE}
+library(reticulate)
+library(shiny)
+```
+
+# Introduction
+Chess is a popular two-person strategy game, the current form of which has been played for centuries, and its predecessors for longer still.  
+  
+Over the centuries, the theoretical understanding of the game has greatly improved, and this has especially been true over the last hundred years, as the pool of talented players has exponentially increased, and the application of computer chess engines, which have become stronger than even the best human players, has greatly impacted chess theory.   
+  
+What effects has this huge increase in the skill of chess players had on the game at a world class level?  
+
+# Research Questions
+
+I wanted to investigate whether, over the last 100 years:
+
+1. The average number of moves required for a player to establish a clear advantage has increased
+2. The proportion of games ending in draws has increased
+
+# Data Origins
+
+The online chess database [Caissabase.co.uk](http://caissabase.co.uk/) contains a vast repository of chess games; 4.27 million games in total, with recorded games as far back as the 17th Century.  
+  
+Furthermore, the games are curated such that:
+ 
+* Duplicates are removed
+* Games with fewer than 5 moves are removed
+* Only games with at least one player at master strength are included
+* ELO ratings are included where known
+  
+This made it an ideal dataset for this project.  
+  
+I began with the entire Caissabase database from the years 1920 to 2020. The data set was further narrowed down by player strength. The games were ranked by the sum of the players' ELO scores, and the top 20 games from each year were selected and analysed, move by move. The chess engine Stockfish was used to analyse the moves, set to a depth of 17 (i.e. looking 17 moves ahead).
+  
+The raw data came in a .pgn format, consisting of a series of headers containing information about the game, and the algebraic notation denoting the moves of the game.
+  
+#### Raw Data Example
+
+```{python example code, echo = F}
+
+example_raw ='[Event "FIDE (28) 1970-1972"] \n[Site "Denver cm sf"]\n[Date "1971.07.??"]\n[Round "1"]\n[White "Fischer, R."]\n[Black "Larsen, B."]\n[Result "1-0"]\n[WhiteElo "2760"]\n[BlackElo "2660"]\n[ECO "B88"]\n1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6 5. Nc3 Nc6 6. Bc4 e6 7. Bb3 Be7\n8. Be3 O-O 9. f4 Bd7 10. O-O a6 11. f5 Qc8 12. fxe6 Bxe6 13. Nxe6 fxe6\n14. Na4 Rb8 15. Nb6 Qe8 16. Bxe6+ Kh8 17. Bf5 Ne5 18. Qd4 Qh5 19. Nd5 Nxd5\n20. Qxd5 Qe2 21. Ba7 Rbe8 22. Rf2 Qb5 23. c3 Bh4 24. g3 Qxd5 25. exd5 Bf6\n26. Raf1 Nc4 27. Be6 Ra8 28. Bd4 Bxd4 29. cxd4 Rxf2 30. Rxf2 b5 31. Kf1 g6\n32. b3 Na3 33. Ke2 Ra7 34. Rf8+ Kg7 35. Rd8 b4 36. Rxd6 Nb5 37. Rb6 Nxd4+ \n38. Kd3 Nxe6 39. Rxe6 a5 40. Kd4 Kf7 41. Re2 1-0'
+print(example_raw)
+```
+  
+# Preparing the Data
+
+I converted the .pgn file to a .txt file and decoded it from the native encoding ISO-8859-1 (AKA latin1), then encoded it to the more standard utf-8 character set, before converting it back into a .pgn file to resolve some errors which resulted from non-unicode strings in the file.
+
+A python code running on a remote linux server was used to prepare the data.
+  
+#### Python Code Used to Process and Analyse the Database of Games
+This program resulted in a .csv file with the top 20 games for each year, information about each game, and a column for each move, containing a score derived from the Stockfish analysis indicating the state of the game. This game score varies between -1 and +1, where -1 is a decisive advantage for black, +1 is a decisive advantage for white, and 0 indicates an equal state of play.  
+
+```{python, eval = F}
+#setup
+
+stockfish_path = "/usr/games/stockfish"
+
+
+import chess.pgn
+import chess
+import chess.engine
+import numpy as np
+import pandas as pd
+import io
+import re
+from itertools import count
+engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+
+#---------------------------
+
+#How many games are in this file?
+
+text_path =  "/home/ubuntu/chessProgram/wholeDatabase.txt"
+
+games_text = open(text_path, mode = "r")
+line_list = games_text.readlines()
+
+EventTag = re.compile('.Event.')
+
+game_count = 0
+
+for line in line_list:
+    if re.match(EventTag, line):
+        game_count += 1
+    
+
+print("number of games = " + str(game_count))
+
+
+# Creating list of all games
+
+games_path =  "/home/ubuntu//chessProgram/wholeDatabase.pgn"
+
+games = open(games_path)
+
+game_list = []
+
+game_iter = 0
+
+for n in range(game_count*2):
+    game_iter += 1
+    game_list.append(chess.pgn.read_game(games))
+    game_iter % 10000 == 0:
+        print("progress: ", str(game_iter), "out of ", str(game_count*2))
+        #Python is counting two games for each actual game for some reason:
+        #one actual game that it can give information about, and just a series
+        #of question marks. So I'm adding both (hence game_count*2) and then just deleting the
+        #blank question mark games.
+
+# Removing blank games
+
+game_list = [game for game in game_list if '????.??.??' not in str(game)]
+
+game_list = [game for game in game_list if game != None]
+
+
+# Creating lists of information about each game, deleting games with incorrectly formatted headers
+
+gameNum_list = []
+year_list = []
+w_elo_list = []
+b_elo_list = []
+outcome_list = []
+
+for number, game in zip(count(len(game_list) - 1, -1), reversed(game_list)):
+    gameNum_list.append(number + 1)
+    try:
+        year = re.match(r"\d{4}", game.headers["Date"])
+        year_list.insert(0,int(year.group()))
+    except AttributeError as error:
+        del game_list[number]
+
+    try:
+        outcome_list.insert(0,str(game.headers["Result"]))
+    except KeyError as error:
+        del game_list[number]
+
+# If a player's elo score isn't stored, it's replaced with a 0
+
+    try:
+        w_elo_list.insert(0, int(game.headers["WhiteElo"]))
+    except KeyError as error:
+        w_elo_list.insert(0, 0)
+
+    try:
+        b_elo_list.insert(0,int(game.headers["BlackElo"]))
+    except KeyError as error:
+        b_elo_list.insert(0, 0)
+
+
+#Ensuring that each line has only one game, and removing the headers which provide information about the game
+
+game_text_list_with_comments = []
+
+headerList = ["Event","Site","Date","Round","White","Black","Result","ECO", "WhiteElo", "BlackElo","Annotator","Source","Remark"]
+
+for line in line_list:
+    line = line.replace("\n", "")
+    ## this regex matches "1." but not e.g. "11." to ensure it catches the start of the game. 
+    if re.match(r"^[1]\.", line) and all([False if i in line else True for i in headerList]) and line != '\n':
+        game_text_list_with_comments.append(line)
+    elif all([False if i in line else True for i in headerList]) and line != '\n' and line != "":
+        game_text_list_with_comments[-1] = game_text_list_with_comments[-1] + " " + line
+    else:
+        pass
+
+#regex to remove commentary from the games
+clean_lines = []
+for line in game_text_list_with_comments:
+    clean_lines.append(re.sub("{\[.*?\]}"," ", line))
+
+
+#Create dataframe
+
+gamesdf = pd.DataFrame({"game": gameNum_list,
+                        "year": year_list,
+                        "w_elo": w_elo_list,
+                        "b_elo": b_elo_list,
+                        "outcome": outcome_list,
+                        "moves": clean_lines
+                        })
+    
+
+gamesdf["total_elo"] = gamesdf["w_elo"] + gamesdf["b_elo"]
+gamesdf["inYearNumber"] = np.nan
+gamesdf["topTen"] = np.nan
+
+#Narrowing down the dataset by selecting hightest rated games
+
+#sorted dataframe by year with best games on top for each year
+gamesdf = gamesdf.sort_values(["year","total_elo"], ascending = [True, False])
+
+
+allTheYears = list(np.arange(1920,2021))
+yearLengths = []
+
+
+#within each year, number items from 1 to however many games there were in that year.
+for year in range(1920, 2021):
+    number = 0
+    for label, row in gamesdf.iterrows():
+        if int(gamesdf.loc[label, "year"]) == year:
+            gamesdf.loc[label, "inYearNumber"] = number
+            number += 1
+    yearLengths.append(number)
+
+#By default the program selects the top 10% of games in each year by the total elo score of the players.
+#This can be changed by changing percentageNumber below to the desired %
+percentageNumber = 10
+
+#dict of years and how many games are in the top ten percent for that year
+yearTopTenNumber = {}
+for key in allTheYears:
+   for value in yearLengths:
+      yearTopTenNumber[key] = round(value / (100/percentageNumber))
+
+
+#deleting the bottom 90% of games in each year
+for label, row in gamesdf[::-1].iterrows():
+    #if gamesdf.loc[label, "inYearNumber"] > yearTopTenNumber[int(gamesdf.loc[label, "year"])]:
+    #this line had to be changed because even 1% of games/year would have been far too many,
+    # so I went with 20 games/year.
+    if gamesdf.loc[label, "inYearNumber"] > 20:
+        gamesdf.loc[label,"topTen"] = False
+    else:
+        gamesdf.loc[label, "topTen"] = True
+
+
+# finalGames is a list of the top selected games from each year to iterate over
+finalGames = list(gamesdf[gamesdf["topTen"]==True]["moves"])
+
+#Analysing
+print("analysing")
+
+
+#defining a function to analyse the moves
+# takes the arguments board and moves, where board is a 'chess.Board' type object
+# and  moves is a 'chess.pgn.Game' type object
+#returns a list of scores, one score per move, between -1 and 1, indicating black advantage
+#and white advantage respectively.
+def get_probslist(board, moves):
+    probslist = []
+    for move in moves:
+            board.push(move)
+            score = engine.analyse(board, chess.engine.Limit(depth=17))
+            pscore = str(score["score"])
+            centipawns = ""
+            for l in pscore:
+                if l == "-" or str.isdigit(l):
+                    centipawns = centipawns + l
+            povprob = chess.engine.Cp(int(centipawns)).wdl().expectation()
+            if "Cp" in pscore:
+                if "BLACK" in pscore:
+                    povprob = abs(povprob -1)
+                    #this line just makes it so that povprob varies between 0 and 1 where 1 is W advantage and 0 is B advantage
+                    #regardless of which point of view it's from.
+                absprob = (povprob*2)-1
+                #this line makes absprob vary between -1 and 1 rather than between 0 and 1        
+            else:
+                absprob = None
+            probslist.append(absprob)
+    return(probslist)
+
+# Iterating over the final selection of best games and analysing each one,
+# saving the resulting list of scores, and the number of moves in the game,
+# to new lists to be included in the final dataframe later.
+
+games_analysed = 0
+move_list_list = []
+move_number_list = []
+
+for gametext in finalGames:
+    pgn = io.StringIO(gametext)
+    game = chess.pgn.read_game(pgn)
+    board = game.board()
+    moves = game.mainline_moves()
+    probslist = get_probslist(board, moves)
+    move_list_list.append(probslist)
+    move_number_list.append(len(probslist))
+    games_analysed += 1
+    if games_analysed % 100 == 0:
+        print(str(games_analysed), " games analysed")
+
+print("All games analysed")
+
+
+#creating dataframe to save the analysis in
+
+gamesdfFinal = gamesdf.copy()
+gamesdfFinal = gamesdfFinal[gamesdfFinal.topTen == True]
+gamesdfFinal["n_moves"] = move_number_list
+gamesdfFinal["move_list_list"] = move_list_list
+
+#reset indexes 
+gamesdfFinal.index = [i for i in range(0,len(gamesdfFinal))]
+
+
+#at this point, the move scores from the stockfish analysis are saved in a list, in a single column;
+#I want the scores for each move in separate columns, which is what this chunk does:
+
+for label, row in gamesdfFinal.iterrows():
+    gamelist = move_list_list[label]
+    for count, move in enumerate(gamelist):
+        gamesdfFinal.loc[label, count] = move
+
+
+#Save dataframe to csv
+
+export_csv = gamesdfFinal.to_csv(r'/home/ubuntu/chessProgram/OutputFinal.csv', index = None, header=True)
+print("Saved!")
+
+
+```
+  
+  
+  
+  
+
+#### Processed Data Example
+  
+```{r processed_data_example, echo = F}
+exampleProcessedData <- read.csv("processedDataExample.csv", header = T)
+
+exampleProcessedDatadf <- data.frame(exampleProcessedData)
+
+print(exampleProcessedDatadf[1:4,1:11])
+
+```
+    
+# Tidying the Data in R Studio
+  
+I converted the resultant file into long-format in R-studio, and added a column to indicate the decade the game had occurred in.
+
+For mysterious reasons, a few games from 1928 had no recorded outcome, so I needed to delete those rows as well.
+
+This was done with the following code:
+```{r setup_real, echo = F}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+gamesdf <- read.csv("completeDataset.csv", header=TRUE)
+gamesdf["outcome"] <- apply(gamesdf["outcome"], 2, function(x) gsub("1-0", "White Win", x))
+gamesdf["outcome"] <- apply(gamesdf["outcome"], 2, function(x) gsub("0-1", "Black Win", x))
+gamesdf["outcome"] <- apply(gamesdf["outcome"], 2, function(x) gsub("1/2-1/2", "Draw", x))
+tidygames <- read.csv("LongFormat.csv", header=TRUE)
+tidygames$outcome <- factor(tidygames$outcome, ordered = T, levels = c("White Win", "Draw", "Black Win"))
+
+```
+
+
+```{r setup_show, eval = F}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+gamesdf <- read.csv("completeDataset.csv", header=TRUE)
+
+#rename outcomes to be more user-friendly
+gamesdf["outcome"] <- apply(gamesdf["outcome"], 2, function(x) gsub("1-0", "White Win", x))
+gamesdf["outcome"] <- apply(gamesdf["outcome"], 2, function(x) gsub("0-1", "Black Win", x))
+gamesdf["outcome"] <- apply(gamesdf["outcome"], 2, function(x) gsub("1/2-1/2", "Draw", x))
+
+#Creating decade column
+gamesdf["decade"] <- gamesdf["year"]
+
+for(i in 1:nrow(gamesdf)) {
+  gamesdf[i,"decade"] <- gamesdf[i,"decade"] - (gamesdf[i,"decade"] %% 10)
+}
+
+#setting the game numbers in numerical order
+gamesdf$game <- seq.int(nrow(gamesdf))
+
+#Make a long format 
+tidygames <- gather(data = gamesdf,
+                    key = move,
+                    value = score,
+                    X0:X272)
+
+#ordering by game number
+tidygames <- tidygames[order(tidygames$game),]
+
+
+#deleting rows with missing values
+tidygames <- na.omit(tidygames)
+
+#deleting rows with outcome NA
+tidygames <- subset(tidygames, "outcome" != "NA")
+
+
+#Replacing the values X0 etc., corresponding to move number, with actual numbers.
+removex <- function(X){
+  X <- gsub("X","",X)
+  return(as.integer(X))
+}
+
+for(i in 1:nrow(tidygames)) {
+  tidygames[i, "move"] <- removex(tidygames[i, "move"])
+}
+
+#convert from characters to integers
+tidygames$move <- as.integer(tidygames$move)
+
+#Make outcome into an ordered factor
+tidygames$outcome <- factor(tidygames$outcome, ordered = T, levels = c("White Win", "Draw", "Black Win"))
+
+
+```
+
+
+# Plot 1: Game Trajectories Over the Decades 
+
+I capped the x-axis at move 150, because:  
+  
+* Only a small proportion of games were still going after 150 moves
+* For games that were longer than 150 moves, there was very little change in the game score after that point anyway
+
+```{r slider-input, echo = F}
+
+sliderInput(inputId = "decade", label = "Time Range", min = 1920, max= 2010, step = 10, value = 1920)
+
+```
+
+```{r interactive_plot1, echo = F}
+renderPlot({
+  #Subset dataframe by year specified by slider
+        tidygames <- subset(tidygames, outcome != "NA") 
+        games <- subset(tidygames, decade == input$decade)
+
+        # generate the plot for games in a given year
+        p <-  ggplot(data = games, mapping = aes(x = move, y = score, color = outcome, shape = outcome, fill = outcome))
+        
+        p + coord_cartesian(xlim = c(0,150), ylim = c(-1, +1)) +
+            geom_point(alpha = 0.4) +
+            geom_smooth(fill = "lightgrey", size = 2) + 
+            scale_shape_manual(breaks = c("White Win", "Draw", "Black Win"), values=c(24, 23, 25)) +
+            scale_color_manual(values=c("white", "darkgrey", "black")) +
+            scale_fill_manual(values=c("white", "darkgrey", "black")) +
+              theme(panel.background = element_rect(fill = "#3883D1", color = "white"),
+                    plot.background = element_rect(fill = "#16559F", color = "white"),
+                    axis.text.x = element_text(colour="white"), 
+                    axis.text.y = element_text(colour="white"),
+                    legend.background = element_rect(fill="#3883D1"),
+                    axis.title.x=element_text(colour="white"),
+                    axis.title.y=element_text(colour="white"))
+        
+    })
+
+```
+  
+  
+# Plot 2: The Length of The Average Game over the Decades
+#### With standard error bars
+
+```{r game_length, warning = F}
+# Average Game length over the decades
+
+#Creating decade column
+gamesdf["decade"] <- gamesdf["year"]
+
+for(i in 1:nrow(gamesdf)) {
+  gamesdf[i,"decade"] <- gamesdf[i,"decade"] - (gamesdf[i,"decade"] %% 10)
+}
+
+# Creating dataframe containing the mean number of moves per decade, with standard errors
+decade_move_means <- aggregate(gamesdf$n_moves, by=list(Category=gamesdf$decade), FUN=mean)
+colnames(decade_move_means) <- c("Decade", "Mean")
+std_error <- function(x) sd(x)/sqrt(length(x))
+decade_move_stderr <- aggregate(gamesdf$n_moves, by=list(Category=gamesdf$decade), FUN=std_error)
+colnames(decade_move_stderr) <- c("Decade", "StandardError")
+decade_move_means["StandardError"] <- decade_move_stderr$StandardError
+
+p <-  ggplot(data = decade_move_means, mapping = aes(x = Decade, y = Mean))
+p + coord_cartesian(ylim = c(50, 100)) + 
+  geom_point(color = "black", size = 1) +
+  geom_path(color = "black", size = 0.5) + 
+  geom_errorbar(aes(ymin=decade_move_means$Mean - decade_move_means$StandardError, ymax=decade_move_means$Mean + decade_move_means$StandardError, width=3)) +
+  ylab("Mean Number of Moves")+
+  scale_x_continuous(name="Decade", limits=c(1918, 2012)) +
+  theme(panel.background = element_rect(fill = "#3883D1", color = "white"),
+        plot.background = element_rect(fill = "#16559F", color = "white"),
+        axis.text.x = element_text(colour="white"), 
+        axis.text.y = element_text(colour="white"),
+        axis.title.x=element_text(colour="white"),
+        axis.title.y=element_text(colour="white"))
+
+```
+  
+# Plot 3: The Proportion of Wins to Draws Over the Decades
+
+``` {r win_draw_rate, warning = F}
+#Creating dataframe containing the percentages of each outcome per decade
+decade_nums <- aggregate(gamesdf$decade, by = list(gamesdf$decade), FUN = length)
+colnames(decade_nums) <- c("Decade", "Number")
+rownames(decade_nums) <- decade_nums$Decade
+
+win_rate <- aggregate(gamesdf$decade, by = list(gamesdf$outcome, gamesdf$decade), FUN = length)
+colnames(win_rate) <- c("Outcome", "Decade", "Percentage")
+win_rate <- subset(win_rate, Outcome != "*") # for the life of me I can't figure out where this damn asterisk is coming from
+win_rate <- subset(win_rate, Decade != 2020)
+rownames(win_rate) <- seq.int(nrow(win_rate))
+
+
+for(i in 1:nrow(win_rate)) {
+  dec <- as.character(win_rate[i,"Decade"])
+  dec_num <- decade_nums[dec,"Number"]
+  win_rate[i,"Percentage"] <- ((win_rate[i, "Percentage"] / dec_num)*100)
+}
+
+win_rate$Outcome <- factor(win_rate$Outcome, ordered = T, levels = c("White Win", "Draw", "Black Win"))
+
+p <- ggplot(data = win_rate, mapping = aes(x = Decade, y = Percentage, color = Outcome, fill = Outcome, shape = Outcome))
+
+p + geom_point(size = 4) +
+  geom_path(size = 1) +
+  scale_shape_manual(breaks = c("White Win", "Draw", "Black Win"), values=c(24, 23, 25)) +
+  scale_color_manual(values=c("white", "darkgrey", "black")) +
+  scale_fill_manual(values=c("white", "darkgrey", "black")) +
+  theme(panel.background = element_rect(fill = "#3883D1", color = "white"),
+        plot.background = element_rect(fill = "#16559F", color = "white"),
+        axis.text.x = element_text(colour="white"), 
+        axis.text.y = element_text(colour="white"),
+        legend.background = element_rect(fill="#3883D1"),
+        axis.title.x=element_text(colour="white"),
+        axis.title.y=element_text(colour="white"))+
+  scale_x_continuous(name="Decade", limits=c(1918, 2012))
+```
+
+
+# Summary
+
+These visualisations suffer from a number of limitations which must be noted before attempting to draw conclusions.  
+  
+The most apparent of these is that very few games before 1970 recorded the ELO scores of the players. This is because, as I later discovered, the World Chess Federation did not adopt this rating system until 1970. As a consequence, the games until 1970 could not reliably be sorted by the skill of the players. If I had more time I'd filter the initial dataset by, for instance, world championship events rather then ELO scores to obviate this issue. Sadly this has meant that the effects of time cannot be disambiguated from the effects of sorting by ELO rating when comparing decades before and after 1970.
+  
+The effects of being unable to sort by ELO before 1970 are clearly reflected in the vastly lower rate of draws, the steeper average slope in the game score, as well as the greater variation in game score over the first couple of dozen moves in games. After 1970, the game score varies very little around 0 for at least the first 20 moves or so; presumably indicating the encyclopedic opening book knowledge of Grandmasters.
+  
+There were only 20 games per year included in the dataset; fewer than I had hoped to include. One clear example of the limited number of games impacting the visualisation is that a few outlier games which the engine predicted would result in a win were drawn, presumably due to imperfect play. In some years these outlier game trajectories impacted the overall shape of the plot.  
+  
+Furthermore, to save time analysing the moves, the Stockfish engine was set to a depth of 17 (i.e. calculating 17 moves ahead), as opposed to the default of 20. This could affect the validity of the scores produced.  
+  
+Because games were selected based on the total ELO score of the players (at least after 1970), the set of selected games for many years and decades are dominated by a very small subset of the strongest players; as few as three in some years. Thus, the plot reflects the dynamics between very few of the best players rather than the broader trends in world class chess.  
+  
+For example, if one of these World Champion-level players adopts an unconventional style of play - for instance unusually aggressive and risky, or is able to sufficiently outclass the rest of the strongest Grandmasters for a period of time, this could be reflected in an increase in the win:draw ratio of the subset included in the visualisation for a period of some years, even while the general trend is a decrease.
+  
+Lastly, the dataset includes games from many different styles of play, such as blitz chess and blindfold chess, which, again, may not reflect the overall trends in standard classical play.  
+  
+With more time and resources, then, I would like to correct these issues by increasing the depth of analysis, including more games per year, and filtering the events to include only classical play. On a practical note, I strongly suspect the code I wrote to analyse the games contains many inefficiencies which I would like to work out with a better knowledge of python.  
+  
+Furthermore, since the plots of game scores over the decades are rather difficult to interpret without comparing them closely, I would have liked to find a more interpretable measure of the average number of moves required to reach a clear advantage, which is only very imperfectly reflected in the average length of each game. One way of doing this could have been to take the subset of games with only white or black wins, take the mean of the absolute value of the game score for each move, and then calculate, for each decade, how many moves it took to reach a mean game score above, say, 0.5. This number of moves could be plotted across the decades to give an indication of the time to reach a clear advantage. This can be approximated by the slope of plotted lines, however such differences are hardly apparent at a glance.  
+  
+In terms of what conclusions can be drawn from these plots, it appears that the average game length increased significantly in the 2010s, though had remained surprisingly steady until then. Few other clear trends are apparent over the last five decades, however. The rate of draws, contrary to my expectations, does not seem to have increased noticeably since the 1970s when the games were filtered by ELO score. Due to the many limitations already noted, it is hard to draw any strong conclusions without more, and better, data.
+  
+  
+  
+  
+  
